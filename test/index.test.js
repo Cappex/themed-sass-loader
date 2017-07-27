@@ -1,264 +1,288 @@
-'use strict';
+"use strict";
 
-Object.assign = Object.assign || require('object-assign');
+require("should");
 
-var should = require('should');
-var path = require('path');
-var webpack = require('webpack');
-var fs = require('fs');
-var enhancedReqFactory = require('enhanced-require');
-var customImporter = require('./tools/customImporter.js');
-var customFunctions = require('./tools/customFunctions.js');
+const path = require("path");
+const webpack = require("webpack");
+const fs = require("fs");
+const merge = require("webpack-merge");
+const customImporter = require("./tools/customImporter.js");
+const customFunctions = require("./tools/customFunctions.js");
+const pathToSassLoader = require.resolve("../lib/loader.js");
+const testLoader = require("./tools/testLoader");
+const sassLoader = require(pathToSassLoader);
 
-var CR = /\r/g;
-var syntaxStyles = ['scss', 'sass'];
-var pathToSassLoader = path.resolve(__dirname, '../index.js');
-var pathToErrorFileNotFound = path.resolve(__dirname, './scss/error-file-not-found.scss');
-var pathToErrorFileNotFound2 = path.resolve(__dirname, './scss/error-file-not-found-2.scss');
-var pathToErrorFile = path.resolve(__dirname, './scss/error.scss');
-var pathToErrorImport = path.resolve(__dirname, './scss/error-import.scss');
+const CR = /\r/g;
+const syntaxStyles = ["scss", "sass"];
+const pathToErrorFileNotFound = path.resolve(__dirname, "./scss/error-file-not-found.scss");
+const pathToErrorFileNotFound2 = path.resolve(__dirname, "./scss/error-file-not-found-2.scss");
+const pathToErrorFile = path.resolve(__dirname, "./scss/error.scss");
+const pathToErrorImport = path.resolve(__dirname, "./scss/error-import.scss");
+const loaderContextMock = {
+    async: Function.prototype,
+    cacheable: Function.prototype,
+    dependency: Function.prototype
+};
 
-describe('sass-loader', function () {
+Object.defineProperty(loaderContextMock, "options", {
+    set() {},
+    get() {
+        throw new Error("webpack options are not allowed to be accessed anymore.");
+    }
+});
 
-    describe('basic', function () {
-
-        testSync('should compile simple sass without errors (sync)', 'language');
-        testAsync('should compile simple sass without errors (async)', 'language');
-
-    });
-
-    describe('config', function () {
-
-        it('should override sassLoader config with loader query', function () {
-            var expectedCss = readCss('sass', 'language');
-            var webpackConfig = Object.assign({}, {
-                entry: 'raw!' + pathToSassLoader + '?indentedSyntax!' + path.join(__dirname, 'sass', 'language.sass'),
-                sassLoader: {
-                    // Incorrect setting here should be overridden by loader query
-                    indentedSyntax: false
+syntaxStyles.forEach(ext => {
+    function execTest(testId, options) {
+        return new Promise((resolve, reject) => {
+            const baseConfig = merge({
+                entry: path.join(__dirname, ext, testId + "." + ext),
+                output: {
+                    filename: "bundle." + ext + ".js"
+                },
+                module: {
+                    rules: [{
+                        test: new RegExp(`\\.${ ext }$`),
+                        use: [
+                            { loader: "raw-loader" },
+                            { loader: pathToSassLoader, options }
+                        ]
+                    }]
                 }
             });
-            var enhancedReq;
-            var actualCss;
 
-            enhancedReq = enhancedReqFactory(module, webpackConfig);
-            actualCss = enhancedReq(webpackConfig.entry);
+            runWebpack(baseConfig, (err) => err ? reject(err) : resolve());
+        }).then(() => {
+            const actualCss = readBundle("bundle." + ext + ".js");
+            const expectedCss = readCss(ext, testId);
 
-            fs.writeFileSync(__dirname + '/output/should override sassLoader config with loader query.sass.sync.css', actualCss, 'utf8');
+            // writing the actual css to output-dir for better debugging
+            // fs.writeFileSync(path.join(__dirname, "output", `${ testId }.${ ext }.css`), actualCss, "utf8");
             actualCss.should.eql(expectedCss);
         });
+    }
 
+    describe(`sass-loader (${ ext })`, () => {
+        describe("basic", () => {
+            it("should compile simple sass without errors", () => execTest("language"));
+        });
+        describe("imports", () => {
+            it("should resolve imports correctly", () => execTest("imports"));
+            // Test for issue: https://github.com/webpack-contrib/sass-loader/issues/32
+            it("should pass with multiple imports", () => execTest("multiple-imports"));
+            // Test for issue: https://github.com/webpack-contrib/sass-loader/issues/73
+            it("should resolve imports from other language style correctly", () => execTest("import-other-style"));
+            // Test for includePath imports
+            it("should resolve imports from another directory declared by includePaths correctly", () => execTest("import-include-paths", {
+                includePaths: [path.join(__dirname, ext, "includePath")]
+            }));
+            it("should not resolve CSS imports", () => execTest("import-css"));
+            it("should compile bootstrap-sass without errors", () => execTest("bootstrap-sass"));
+            it("should correctly import scoped npm packages", () => execTest("import-from-npm-org-pkg"));
+        });
+        describe("custom importers", () => {
+            it("should use custom importer", () => execTest("custom-importer", {
+                importer: customImporter
+            }));
+        });
+        describe("custom functions", () => {
+            it("should expose custom functions", () => execTest("custom-functions", {
+                functions: customFunctions
+            }));
+        });
+        describe("prepending data", () => {
+            it("should extend the data-option if present", () => execTest("prepending-data", {
+                data: "$prepended-data: hotpink;"
+            }));
+        });
+        // See https://github.com/webpack-contrib/sass-loader/issues/21
+        describe("empty files", () => {
+            it("should compile without errors", () => execTest("empty"));
+        });
     });
+});
 
-    describe('imports', function () {
+describe("sass-loader", () => {
+    describe("multiple compilations", () => {
+        it("should not interfere with each other", () =>
+            new Promise((resolve, reject) => {
+                runWebpack({
+                    entry: {
+                        b: path.join(__dirname, "scss", "multipleCompilations", "b.scss"),
+                        c: path.join(__dirname, "scss", "multipleCompilations", "c.scss"),
+                        a: path.join(__dirname, "scss", "multipleCompilations", "a.scss"),
+                        d: path.join(__dirname, "scss", "multipleCompilations", "d.scss"),
+                        e: path.join(__dirname, "scss", "multipleCompilations", "e.scss"),
+                        f: path.join(__dirname, "scss", "multipleCompilations", "f.scss"),
+                        g: path.join(__dirname, "scss", "multipleCompilations", "g.scss"),
+                        h: path.join(__dirname, "scss", "multipleCompilations", "h.scss")
+                    },
+                    output: {
+                        filename: "bundle.multiple-compilations.[name].js"
+                    },
+                    module: {
+                        rules: [{
+                            test: /\.scss$/,
+                            use: [
+                                { loader: "raw-loader" },
+                                // We're specifying an empty options object because otherwise, webpack creates a new object for every loader invocation
+                                // Since we want to ensure that our loader is not tampering with the option object, we are triggering webpack to re-use the options object
+                                // @see https://github.com/webpack-contrib/sass-loader/issues/368#issuecomment-278330164
+                                { loader: pathToSassLoader, options: {} }
+                            ]
+                        }]
+                    }
+                }, err => err ? reject(err) : resolve());
+            })
+                .then(() => {
+                    const expectedCss = readCss("scss", "imports");
+                    const a = readBundle("bundle.multiple-compilations.a.js");
+                    const b = readBundle("bundle.multiple-compilations.b.js");
+                    const c = readBundle("bundle.multiple-compilations.c.js");
+                    const d = readBundle("bundle.multiple-compilations.d.js");
+                    const e = readBundle("bundle.multiple-compilations.e.js");
+                    const f = readBundle("bundle.multiple-compilations.f.js");
+                    const g = readBundle("bundle.multiple-compilations.g.js");
+                    const h = readBundle("bundle.multiple-compilations.h.js");
 
-        testSync('should resolve imports correctly (sync)', 'imports');
-        testAsync('should resolve imports correctly (async)', 'imports');
-
-        // Test for issue: https://github.com/jtangelder/sass-loader/issues/32
-        testSync('should pass with multiple imports (sync)', 'multiple-imports');
-        testAsync('should pass with multiple imports (async)', 'multiple-imports');
-
-        // Test for issue: https://github.com/jtangelder/sass-loader/issues/73
-        testSync('should resolve imports from other language style correctly (sync)', 'import-other-style');
-        testAsync('should resolve imports from other language style correctly (async)', 'import-other-style');
-
-        // Test for includePath imports
-        testSync('should resolve imports from another directory declared by includePaths correctly (sync)', 'import-include-paths', function (ext) {
-            return {
-                sassLoader: {
-                    includePaths: [path.join(__dirname, ext, 'from-include-path')]
-                }
-            };
-        });
-        testAsync('should resolve imports from another directory declared by includePaths correctly (async)', 'import-include-paths', function (ext) {
-            return {
-                sassLoader: {
-                    includePaths: [path.join(__dirname, ext, 'from-include-path')]
-                }
-            };
-        });
-
-        testSync('should not resolve CSS imports (sync)', 'import-css');
-        testAsync('should not resolve CSS imports (async)', 'import-css');
-
-        testSync('should compile bootstrap-sass without errors (sync)', 'bootstrap-sass');
-        testAsync('should compile bootstrap-sass without errors (async)', 'bootstrap-sass');
+                    a.should.equal(expectedCss);
+                    b.should.equal(expectedCss);
+                    c.should.equal(expectedCss);
+                    d.should.equal(expectedCss);
+                    e.should.equal(expectedCss);
+                    f.should.equal(expectedCss);
+                    g.should.equal(expectedCss);
+                    h.should.equal(expectedCss);
+                })
+        );
     });
+    describe("source maps", () => {
+        function buildWithSourceMaps() {
+            return new Promise((resolve, reject) => {
+                runWebpack({
+                    entry: path.join(__dirname, "scss", "imports.scss"),
+                    output: {
+                        filename: "bundle.source-maps.js"
+                    },
+                    devtool: "source-map",
+                    module: {
+                        rules: [{
+                            test: /\.scss$/,
+                            use: [
+                                { loader: testLoader.filename },
+                                { loader: pathToSassLoader, options: {
+                                    sourceMap: true
+                                } }
+                            ]
+                        }]
+                    }
+                }, err => err ? reject(err) : resolve());
+            });
+        }
 
-    describe('custom importers', function () {
+        it("should compile without errors", () => buildWithSourceMaps());
+        it("should produce a valid source map", () => {
+            const cwdGetter = process.cwd;
+            const fakeCwd = path.join(__dirname, "scss");
 
-        testSync('should use custom importer', 'custom-importer', function () {
-            return {
-                sassLoader: {
-                    importer: customImporter
-                }
+            process.cwd = function () {
+                return fakeCwd;
             };
-        });
-        testAsync('should use custom importer', 'custom-importer', function () {
-            return {
-                sassLoader: {
-                    importer: customImporter
-                }
-            };
-        });
 
+            return buildWithSourceMaps()
+                .then(() => {
+                    const sourceMap = testLoader.sourceMap;
+
+                    sourceMap.should.not.have.property("file");
+                    sourceMap.should.have.property("sourceRoot", fakeCwd);
+                    // This number needs to be updated if imports.scss or any dependency of that changes
+                    sourceMap.sources.should.have.length(8);
+                    sourceMap.sources.forEach(sourcePath =>
+                        fs.existsSync(path.resolve(sourceMap.sourceRoot, sourcePath))
+                    );
+
+                    process.cwd = cwdGetter;
+                });
+        });
     });
-
-    describe('custom functions', function () {
-
-        testSync('should expose custom functions', 'custom-functions', function () {
-            return {
-                sassLoader: {
-                    functions: customFunctions
-                }
-            };
-        });
-        testAsync('should expose custom functions', 'custom-functions', function () {
-            return {
-                sassLoader: {
-                    functions: customFunctions
-                }
-            };
-        });
-
-    });
-
-    describe('prepending data', function () {
-
-        testSync('should extend the data-option if present', 'prepending-data', function () {
-            return {
-                sassLoader: {
-                    data: '$prepended-data: hotpink;'
-                }
-            };
-        });
-        testAsync('should extend the data-option if present', 'prepending-data', function () {
-            return {
-                sassLoader: {
-                    data: '$prepended-data: hotpink;'
-                }
-            };
-        });
-
-    });
-
-    describe('errors', function () {
-
-        it('should output understandable errors in entry files', function () {
+    describe("errors", () => {
+        it("should throw an error in synchronous loader environments", () => {
             try {
-                enhancedReqFactory(module)(pathToSassLoader + '!' + pathToErrorFile);
+                sassLoader.call(Object.create(loaderContextMock), "");
             } catch (err) {
                 // check for file excerpt
-                err.message.should.match(/\.syntax-error''/);
-                err.message.should.match(/Invalid CSS after/);
-                err.message.should.match(/\(line 1, column 14\)/);
-                err.message.indexOf(pathToErrorFile).should.not.equal(-1);
+                err.message.should.equal("Synchronous compilation is not supported anymore. See https://github.com/webpack-contrib/sass-loader/issues/333");
             }
         });
-
-        it('should output understandable errors of imported files', function () {
-            try {
-                enhancedReqFactory(module)(pathToSassLoader + '!' + pathToErrorImport);
-            } catch (err) {
-                // check for file excerpt
-                err.message.should.match(/\.syntax-error''/);
-                err.message.should.match(/Invalid CSS after "\.syntax-error''": expected "\{", was ""/);
-                err.message.should.match(/\(line 1, column 14\)/);
+        it("should output understandable errors in entry files", (done) => {
+            runWebpack({
+                entry: pathToSassLoader + "!" + pathToErrorFile
+            }, (err) => {
+                err.message.should.match(/Property "some-value" must be followed by a ':'/);
+                err.message.should.match(/\(line 2, column 5\)/);
                 err.message.indexOf(pathToErrorFile).should.not.equal(-1);
-            }
+                done();
+            });
         });
-
-        it('should output understandable errors when a file could not be found', function () {
-            try {
-                enhancedReqFactory(module)(pathToSassLoader + '!' + pathToErrorFileNotFound);
-            } catch (err) {
+        it("should output understandable errors of imported files", (done) => {
+            runWebpack({
+                entry: pathToSassLoader + "!" + pathToErrorImport
+            }, (err) => {
                 // check for file excerpt
+                err.message.should.match(/Property "some-value" must be followed by a ':'/);
+                err.message.should.match(/\(line 2, column 5\)/);
+                err.message.indexOf(pathToErrorFile).should.not.equal(-1);
+                done();
+            });
+        });
+        it("should output understandable errors when a file could not be found", (done) => {
+            runWebpack({
+                entry: pathToSassLoader + "!" + pathToErrorFileNotFound
+            }, (err) => {
                 err.message.should.match(/@import "does-not-exist";/);
                 err.message.should.match(/File to import not found or unreadable: does-not-exist/);
                 err.message.should.match(/\(line 1, column 1\)/);
                 err.message.indexOf(pathToErrorFileNotFound).should.not.equal(-1);
-            }
+                done();
+            });
         });
-
-        it('should not auto-resolve imports with explicit file names', function () {
-            try {
-                enhancedReqFactory(module)(pathToSassLoader + '!' + pathToErrorFileNotFound2);
-            } catch (err) {
-                // check for file excerpt
+        it("should not auto-resolve imports with explicit file names", (done) => {
+            runWebpack({
+                entry: pathToSassLoader + "!" + pathToErrorFileNotFound2
+            }, (err) => {
                 err.message.should.match(/@import "\.\/another\/_module\.scss";/);
                 err.message.should.match(/File to import not found or unreadable: \.\/another\/_module\.scss/);
                 err.message.should.match(/\(line 1, column 1\)/);
                 err.message.indexOf(pathToErrorFileNotFound2).should.not.equal(-1);
-            }
-        });
-
-    });
-});
-
-
-function readCss(ext, id) {
-    return fs.readFileSync(path.join(__dirname, ext, 'spec', id + '.css'), 'utf8').replace(CR, '');
-}
-
-function testAsync(name, id, config) {
-    syntaxStyles.forEach(function forEachSyntaxStyle(ext) {
-        it(name + ' (' + ext + ')', function (done) {
-            var expectedCss = readCss(ext, id);
-            var sassFile = pathToSassFile(ext, id);
-            var webpackConfig = Object.assign(config ? config(ext) : {}, {
-                entry: sassFile,
-                output: {
-                    path: __dirname + '/output',
-                    filename: 'bundle.' + ext + '.js',
-                    libraryTarget: 'commonjs2'
-                }
-            });
-            var actualCss;
-
-            webpack(webpackConfig, function onCompilationFinished(err, stats) {
-                if (err) {
-                    return done(err);
-                }
-                if (stats.hasErrors()) {
-                    return done(stats.compilation.errors[0]);
-                }
-                if (stats.hasWarnings()) {
-                    return done(stats.compilation.warnings[0]);
-                }
-                delete require.cache[path.resolve(__dirname, './output/bundle.' + ext + '.js')];
-
-                actualCss = require('./output/bundle.' + ext + '.js');
-                // writing the actual css to output-dir for better debugging
-                fs.writeFileSync(__dirname + '/output/' + name + '.' + ext + '.async.css', actualCss, 'utf8');
-                actualCss.should.eql(expectedCss);
-
                 done();
             });
         });
     });
+});
+
+function readCss(ext, id) {
+    return fs.readFileSync(path.join(__dirname, ext, "spec", id + ".css"), "utf8").replace(CR, "");
 }
 
-function testSync(name, id, config) {
-    syntaxStyles.forEach(function forEachSyntaxStyle(ext) {
-        it(name + ' (' + ext + ')', function () {
-            var expectedCss = readCss(ext, id);
-            var sassFile = pathToSassFile(ext, id);
-            var webpackConfig = Object.assign(config ? config(ext) : {}, {
-                entry: sassFile
-            });
-            var enhancedReq;
-            var actualCss;
+function runWebpack(baseConfig, done) {
+    const webpackConfig = merge({
+        output: {
+            path: path.join(__dirname, "output"),
+            filename: "bundle.js",
+            libraryTarget: "commonjs2"
+        }
+    }, baseConfig);
 
-            enhancedReq = enhancedReqFactory(module, webpackConfig);
-            actualCss = enhancedReq(webpackConfig.entry);
+    webpack(webpackConfig, (webpackErr, stats) => {
+        const err = webpackErr ||
+            (stats.hasErrors() && stats.compilation.errors[0]) ||
+            (stats.hasWarnings() && stats.compilation.warnings[0]);
 
-            fs.writeFileSync(__dirname + '/output/' + name + '.' + ext + '.sync.css', actualCss, 'utf8');
-            actualCss.should.eql(expectedCss);
-        });
+        done(err || null);
     });
 }
 
-function pathToSassFile(ext, id) {
-    return 'raw!' + pathToSassLoader + '!' + path.join(__dirname, ext, id + '.' + ext);
+function readBundle(filename) {
+    delete require.cache[path.resolve(__dirname, `./output/${ filename }`)];
+
+    return require(`./output/${ filename }`);
 }
